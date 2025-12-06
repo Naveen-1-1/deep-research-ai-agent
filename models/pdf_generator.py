@@ -4,7 +4,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.pagesizes import letter
 import tempfile
 
-# Task 6: Implements create_pdf function
+# Implements create_pdf function
 def create_pdf(summary, content, links):
     temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(temp_pdf.name, pagesize=letter,

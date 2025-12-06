@@ -1,2 +1,6 @@
 streamlit
-crewai
+crewai[google-genai]
+google-generativeai
+langchain-google-genai
+langchain
+reportlab

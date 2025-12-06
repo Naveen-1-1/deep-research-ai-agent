@@ -1,24 +1,42 @@
 from crewai import Crew, Agent, Task
-from langchain_openai import ChatOpenAI
-from langchain.tools import Tool
+from crewai.tools import tool
+from langchain_core.messages import HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 import requests
+import logging
 
 extracted_links = []
 
-# Task 1: Add dotenv import here
+# Add dotenv import
 from dotenv import load_dotenv
 load_dotenv()
 
-# Task 1: Add your OPENAI API key here
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-print(OPENAI_API_KEY)
-
-# Task 2: Add your FIRECRAWL API Key  here
+# API Keys
 FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# Task 3: Add Firecrawl Search function here
-def firecrawl_search(query):
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Helper function to get LLM model string with Gemini fallback
+def get_llm_model():
+    """
+    Returns the appropriate LLM model string for CrewAI.
+    CrewAI uses LiteLLM which supports multiple providers.
+    """
+    if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
+        logger.info("Using Google Gemini as LLM")
+        os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
+        return "gemini/gemini-2.5-flash-lite"
+    else:
+        raise ValueError("Google API key is not configured. Please set the API key in .env file.")
+
+# Firecrawl Search function using CrewAI tool decorator
+@tool("FirecrawlSearch")
+def firecrawl_search(query: str) -> str:
+    """Search the web using Firecrawl API and return HTML content or fallback LLM answer."""
     response = requests.get(
         f"https://api.firecrawl.dev/v1/search?query={query}",
         headers={"Authorization": f"Bearer {FIRECRAWL_KEY}"}
@@ -37,32 +55,39 @@ def firecrawl_search(query):
         except Exception:
             pass
 
-    llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, temperature=0.3)
-    fallback_response = llm.invoke([
-        HumanMessage(content=f"Please provide a clear explanation about: {query}. Include definition, features, and common use cases.")
-    ])
-    return fallback_response.content
+    # Use Gemini fallback when search fails
+    try:
+        if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash-lite",
+                google_api_key=GOOGLE_API_KEY,
+                temperature=0.3,
+                convert_system_message_to_human=True
+            )
+            fallback_response = llm.invoke([
+                HumanMessage(content=f"Please provide a clear explanation about: {query}. Include definition, features, and common use cases.")
+            ])
+            return fallback_response.content
+        else:
+            return f"Search failed and no fallback LLM available. Query was: {query}"
+    except Exception as e:
+        logger.error(f"Fallback LLM also failed: {e}")
+        return f"Search failed and LLM fallback unavailable. Query was: {query}"
 
 
-# Register Firecrawl as LangChain Tool
-firecrawl_tool = Tool(
-    name="FirecrawlSearch",
-    description="Search the web using Firecrawl API and return HTML content or fallback LLM answer.",
-    func=firecrawl_search
-)
-
-
-# Task 5: Implement Researcher, Summarizer, and presenter Agents
+# Implement Researcher, Summarizer, and presenter Agents
 def setup_agents_and_tasks(query, breadth, depth):
-    llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, temperature=0.3)
+    # Get the appropriate LLM model string
+    llm_model = get_llm_model()
+    logger.info(f"Setting up agents with LLM model: {llm_model}")
 
     researcher = Agent(
         name="Research Agent",
         role="Web searcher and data collector",
         goal="Conduct deep recursive web research",
         backstory="Expert in online information mining and query generation",
-        tools=[firecrawl_tool],
-        llm=llm,
+        tools=[firecrawl_search],
+        llm=llm_model,
         verbose=True,
         allow_delegation=False
     )
@@ -73,7 +98,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         goal="Condense detailed findings into concise summaries",
         backstory="Skilled in summarizing complex texts for better understanding",
         tools=[],
-        llm=llm,
+        llm=llm_model,
         verbose=True,
         allow_delegation=True
     )
@@ -84,7 +109,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         goal="Create readable and well-structured reports",
         backstory="Experienced in generating polished documents for readers",
         tools=[],
-        llm=llm,
+        llm=llm_model,
         verbose=True,
         allow_delegation=True
     )
@@ -115,4 +140,4 @@ def setup_agents_and_tasks(query, breadth, depth):
         max_time=300
     )
 
-    return crew, researcher, firecrawl_tool
+    return crew, researcher, firecrawl_search

@@ -5,7 +5,7 @@ import base64
 
 extracted_links = []
 
-# Task 7: Implements run_deep_research function
+# Implements run_deep_research function
 def run_deep_research(query, breadth, depth):
     crew, researcher_tool, firecrawl_tool = setup_agents_and_tasks(query, breadth, depth)
     result = crew.kickoff()
