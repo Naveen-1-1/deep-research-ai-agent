@@ -114,9 +114,23 @@ def setup_agents_and_tasks(query, breadth, depth):
         allow_delegation=True
     )
 
+    # Build research description based on breadth and depth
+    breadth_instruction = f"Generate {breadth} different search queries or angles to explore this topic thoroughly."
+    depth_instruction = f"For each angle, perform {depth} levels of investigation (initial search + {depth-1} follow-up searches on interesting findings)."
+    
     task_research = Task(
-        description=f"Perform deep research on: {query}.",
-        expected_output="Raw web content, source links, and extracted notes",
+        description=f"""Perform comprehensive research on: {query}
+        
+        Research Parameters:
+        - {breadth_instruction}
+        - {depth_instruction}
+        
+        For example, if breadth=3 and depth=2:
+        - Generate 3 different search angles
+        - For each angle, do initial search + 1 follow-up on most relevant finding
+        
+        Ensure you explore the topic from multiple perspectives and dig deep into each one.""",
+        expected_output="Raw web content from multiple search angles, source links, and detailed notes organized by search angle",
         agent=researcher
     )
 
@@ -132,12 +146,17 @@ def setup_agents_and_tasks(query, breadth, depth):
         agent=presenter
     )
 
+    # Scale max_steps based on breadth and depth
+    # Each breadth*depth combo needs approximately 5-10 steps
+    max_steps = max(20, breadth * depth * 7)
+    max_time = max(300, breadth * depth * 60)  # ~1 min per breadth*depth unit
+    
     crew = Crew(
         agents=[researcher, summarizer, presenter],
         tasks=[task_research, task_summarize, task_present],
         verbose=True,
-        max_steps=20,
-        max_time=300
+        max_steps=max_steps,
+        max_time=max_time
     )
 
     return crew, researcher, firecrawl_search
