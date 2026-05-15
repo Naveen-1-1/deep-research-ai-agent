@@ -20,6 +20,7 @@ patch_crewai_console_redaction()
 
 FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,10 @@ extracted_links: list[str] = []
 def get_llm_model():
     """Returns the LLM model string for CrewAI (LiteLLM / Gemini)."""
     if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
-        logger.info("Using Google Gemini as LLM")
+        logger.info("Using Google Gemini model: %s", GEMINI_MODEL)
         if not os.getenv("GEMINI_API_KEY"):
             os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
-        return "gemini/gemini-2.5-flash-lite"
+        return f"gemini/{GEMINI_MODEL}"
     raise ValueError("Google API key is not configured. Please set GOOGLE_API_KEY in .env file.")
 
 
@@ -87,7 +88,7 @@ def gemini_knowledge_fallback(query: str) -> str:
         return f"No fallback LLM available. Query was: {query}"
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-lite",
+            model=GEMINI_MODEL,
             google_api_key=GOOGLE_API_KEY,
             temperature=0.3,
             convert_system_message_to_human=True,
@@ -140,6 +141,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
+        max_retry_limit=0,
     )
 
     summarizer = Agent(
@@ -151,6 +153,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
+        max_retry_limit=0,
     )
 
     presenter = Agent(
@@ -162,6 +165,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
+        max_retry_limit=0,
     )
 
     breadth_instruction = f"Generate {breadth} different search queries or angles to explore this topic thoroughly."

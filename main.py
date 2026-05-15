@@ -12,8 +12,8 @@ st.title("Deep Research Assistant with CrewAI")
 st.markdown("Enter your research topic and configure parameters below:")
 
 query = st.text_input("Research Query")
-breadth = st.slider("Search Breadth (Number of Queries)", 1, 10, 3)
-depth = st.slider("Search Depth (Recursion Levels)", 1, 5, 2)
+breadth = st.slider("Search Breadth (Number of Queries)", 1, 10, 1)
+depth = st.slider("Search Depth (Recursion Levels)", 1, 5, 1)
 
 if st.button("Run Deep Research"):
     if not query:
