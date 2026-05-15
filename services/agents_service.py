@@ -1,23 +1,26 @@
 from crewai import Crew, Agent, Task
-from crewai.mcp import MCPServerHTTP
-from crewai.mcp.filters import create_static_tool_filter
 from crewai.tools import tool
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 import json
 import logging
 import os
-import re
 
 import requests
 from dotenv import load_dotenv
 
+from utils.log_sanitizer import configure_safe_logging, redact_secrets, register_secrets_from_env
+from utils.mcp_config import build_firecrawl_mcp_config
+from utils.crewai_safe_console import patch_crewai_console_redaction
+
 load_dotenv()
+configure_safe_logging()
+register_secrets_from_env()
+patch_crewai_console_redaction()
 
 FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 extracted_links: list[str] = []
@@ -27,21 +30,17 @@ def get_llm_model():
     """Returns the LLM model string for CrewAI (LiteLLM / Gemini)."""
     if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
         logger.info("Using Google Gemini as LLM")
-        os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
+        if not os.getenv("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
         return "gemini/gemini-2.5-flash-lite"
     raise ValueError("Google API key is not configured. Please set GOOGLE_API_KEY in .env file.")
 
 
 def get_firecrawl_mcp_config():
-    """Firecrawl hosted MCP — search tool only."""
+    """Firecrawl MCP via stdio when npx is available; otherwise None (use REST tool)."""
     if not FIRECRAWL_KEY or not FIRECRAWL_KEY.strip():
         raise ValueError("Firecrawl API key is not configured. Please set FIRECRAWL_KEY in .env file.")
-    return MCPServerHTTP(
-        url=f"https://mcp.firecrawl.dev/{FIRECRAWL_KEY.strip()}/v2/mcp",
-        streamable=True,
-        cache_tools_list=True,
-        tool_filter=create_static_tool_filter(allowed_tool_names=["firecrawl_search"]),
-    )
+    return build_firecrawl_mcp_config(FIRECRAWL_KEY.strip())
 
 
 def _collect_urls_from_payload(payload) -> None:
@@ -75,10 +74,10 @@ def firecrawl_search_direct(query: str) -> str:
             data = response.json()
             _collect_urls_from_payload(data)
             return json.dumps(data, indent=2)
-        return f"Firecrawl search failed ({response.status_code}): {response.text[:500]}"
+        return f"Firecrawl search failed ({response.status_code}): {redact_secrets(response.text[:500])}"
     except Exception as e:
-        logger.error(f"Direct Firecrawl search failed: {e}")
-        return f"Direct Firecrawl search error: {e}"
+        logger.error("Direct Firecrawl search failed: %s", redact_secrets(str(e)))
+        return f"Direct Firecrawl search error: {redact_secrets(str(e))}"
 
 
 @tool("GeminiKnowledgeFallback")
@@ -112,15 +111,31 @@ def setup_agents_and_tasks(query, breadth, depth):
     extracted_links = []
 
     llm_model = get_llm_model()
+    mcp_config = get_firecrawl_mcp_config()
+    mcps = [mcp_config] if mcp_config else []
+
     logger.info(f"Setting up agents with LLM model: {llm_model}")
-    logger.info("Research agent: Firecrawl MCP (firecrawl_search) + direct search fallback")
+    if mcp_config:
+        logger.info("Research agent: Firecrawl MCP (firecrawl_search) + direct search fallback")
+    else:
+        logger.info("Research agent: FirecrawlSearchDirect REST + Gemini fallback (no MCP)")
+
+    if mcp_config:
+        search_strategy = """Search strategy (in order):
+        1. Try firecrawl_search MCP tool with limit=3 per query.
+        2. If MCP times out or fails, use FirecrawlSearchDirect for the same query.
+        3. Only use GeminiKnowledgeFallback if both search methods fail."""
+    else:
+        search_strategy = """Search strategy (in order):
+        1. Use FirecrawlSearchDirect for all web searches (limit=5 per query).
+        2. Only use GeminiKnowledgeFallback if search fails."""
 
     researcher = Agent(
         name="Research Agent",
         role="Web searcher and data collector",
         goal="Conduct deep recursive web research",
         backstory="Expert in online information mining and query generation",
-        mcps=[get_firecrawl_mcp_config()],
+        mcps=mcps,
         tools=[firecrawl_search_direct, gemini_knowledge_fallback],
         llm=llm_model,
         verbose=True,
@@ -162,10 +177,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         - {breadth_instruction}
         - {depth_instruction}
 
-        Search strategy (in order):
-        1. Try firecrawl_search MCP tool with limit=3 per query.
-        2. If MCP times out or fails, use FirecrawlSearchDirect for the same query.
-        3. Only use GeminiKnowledgeFallback if both search methods fail.
+        {search_strategy}
 
         Include source URLs in your notes whenever available.
 
@@ -193,7 +205,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         ),
         expected_output="A complete final human-readable report (at least 3 paragraphs)",
         agent=presenter,
-        context=[task_summarize],
+        context=[task_research, task_summarize],
     )
 
     max_steps = max(20, breadth * depth * 7)

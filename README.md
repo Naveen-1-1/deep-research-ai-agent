@@ -225,7 +225,9 @@ pip install "crewai[google-genai]"
 - Verify `FIRECRAWL_KEY` is correct in `.env`
 - Check your Firecrawl API quota/credits at [firecrawl.dev](https://www.firecrawl.dev/)
 - Ensure `mcp` is installed: `pip install mcp`
-- The app uses the hosted MCP URL: `https://mcp.firecrawl.dev/{FIRECRAWL_KEY}/v2/mcp`
+- Firecrawl MCP uses **stdio** when `npx` is installed (API key never in URLs)
+- Without Node.js: **FirecrawlSearchDirect** REST tool is used instead (no hosted MCP URL in logs)
+- Optional: `FIRECRAWL_MCP_TRANSPORT=http` forces hosted MCP (not recommended — key appears in URLs)
 - System will use Gemini fallback when search is insufficient
 
 **Model name errors (404 NOT_FOUND)**

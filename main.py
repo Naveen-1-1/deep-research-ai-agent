@@ -1,8 +1,13 @@
+from utils.log_sanitizer import configure_safe_logging
+from utils.crewai_safe_console import patch_crewai_console_redaction
+
+configure_safe_logging()
+patch_crewai_console_redaction()
+
 import streamlit as st
 from controllers.research_controller import run_deep_research
 
 
-# Create the GUI for the Deep Research Tool
 st.title("Deep Research Assistant with CrewAI")
 st.markdown("Enter your research topic and configure parameters below:")
 
@@ -25,11 +30,11 @@ if st.button("Run Deep Research"):
                 label="Download Report as PDF",
                 data=pdf_data,
                 file_name="deep_research_report.pdf",
-                mime="application/pdf"
+                mime="application/pdf",
             )
 
             st.markdown("### PDF Preview")
             st.markdown(
                 f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>',
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
