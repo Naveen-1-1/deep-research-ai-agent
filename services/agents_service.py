@@ -1,95 +1,130 @@
 from crewai import Crew, Agent, Task
+from crewai.mcp import MCPServerHTTP
+from crewai.mcp.filters import create_static_tool_filter
 from crewai.tools import tool
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-import os
-import requests
+import json
 import logging
+import os
+import re
 
-extracted_links = []
-
-# Add dotenv import
+import requests
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# API Keys
 FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Helper function to get LLM model string with Gemini fallback
+extracted_links: list[str] = []
+
+
 def get_llm_model():
-    """
-    Returns the appropriate LLM model string for CrewAI.
-    CrewAI uses LiteLLM which supports multiple providers.
-    """
+    """Returns the LLM model string for CrewAI (LiteLLM / Gemini)."""
     if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
         logger.info("Using Google Gemini as LLM")
         os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
         return "gemini/gemini-2.5-flash-lite"
-    else:
-        raise ValueError("Google API key is not configured. Please set the API key in .env file.")
+    raise ValueError("Google API key is not configured. Please set GOOGLE_API_KEY in .env file.")
 
-# Firecrawl Search function using CrewAI tool decorator
-@tool("FirecrawlSearch")
-def firecrawl_search(query: str) -> str:
-    """Search the web using Firecrawl API and return HTML content or fallback LLM answer."""
-    response = requests.get(
-        f"https://api.firecrawl.dev/v1/search?query={query}",
-        headers={"Authorization": f"Bearer {FIRECRAWL_KEY}"}
+
+def get_firecrawl_mcp_config():
+    """Firecrawl hosted MCP — search tool only."""
+    if not FIRECRAWL_KEY or not FIRECRAWL_KEY.strip():
+        raise ValueError("Firecrawl API key is not configured. Please set FIRECRAWL_KEY in .env file.")
+    return MCPServerHTTP(
+        url=f"https://mcp.firecrawl.dev/{FIRECRAWL_KEY.strip()}/v2/mcp",
+        streamable=True,
+        cache_tools_list=True,
+        tool_filter=create_static_tool_filter(allowed_tool_names=["firecrawl_search"]),
     )
 
-    if response.status_code == 200:
-        try:
-            json_data = response.json()
-            results = json_data.get("results", [])
-            if results:
-                for result in results:
-                    url = result.get("url")
-                    if url:
-                        extracted_links.append(url)
-                return response.text
-        except Exception:
-            pass
 
-    # Use Gemini fallback when search fails
+def _collect_urls_from_payload(payload) -> None:
+    """Append URLs found in search/MCP JSON responses to extracted_links."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in ("url", "sourceURL", "source_url") and isinstance(value, str) and value.startswith("http"):
+                if value not in extracted_links:
+                    extracted_links.append(value)
+            else:
+                _collect_urls_from_payload(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            _collect_urls_from_payload(item)
+
+
+@tool("FirecrawlSearchDirect")
+def firecrawl_search_direct(query: str) -> str:
+    """Fast direct Firecrawl web search. Use when the MCP search tool times out or fails."""
     try:
-        if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash-lite",
-                google_api_key=GOOGLE_API_KEY,
-                temperature=0.3,
-                convert_system_message_to_human=True
-            )
-            fallback_response = llm.invoke([
-                HumanMessage(content=f"Please provide a clear explanation about: {query}. Include definition, features, and common use cases.")
-            ])
-            return fallback_response.content
-        else:
-            return f"Search failed and no fallback LLM available. Query was: {query}"
+        response = requests.post(
+            "https://api.firecrawl.dev/v1/search",
+            headers={
+                "Authorization": f"Bearer {FIRECRAWL_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"query": query, "limit": 5},
+            timeout=45,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            _collect_urls_from_payload(data)
+            return json.dumps(data, indent=2)
+        return f"Firecrawl search failed ({response.status_code}): {response.text[:500]}"
     except Exception as e:
-        logger.error(f"Fallback LLM also failed: {e}")
-        return f"Search failed and LLM fallback unavailable. Query was: {query}"
+        logger.error(f"Direct Firecrawl search failed: {e}")
+        return f"Direct Firecrawl search error: {e}"
 
 
-# Implement Researcher, Summarizer, and presenter Agents
+@tool("GeminiKnowledgeFallback")
+def gemini_knowledge_fallback(query: str) -> str:
+    """Provide background knowledge when web search is unavailable or insufficient."""
+    if not GOOGLE_API_KEY or not GOOGLE_API_KEY.strip():
+        return f"No fallback LLM available. Query was: {query}"
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash-lite",
+            google_api_key=GOOGLE_API_KEY,
+            temperature=0.3,
+            convert_system_message_to_human=True,
+        )
+        response = llm.invoke([
+            HumanMessage(
+                content=(
+                    f"Please provide a clear explanation about: {query}. "
+                    "Include definition, features, and common use cases."
+                )
+            )
+        ])
+        return response.content
+    except Exception as e:
+        logger.error(f"Gemini fallback failed: {e}")
+        return f"LLM fallback unavailable. Query was: {query}"
+
+
 def setup_agents_and_tasks(query, breadth, depth):
-    # Get the appropriate LLM model string
+    global extracted_links
+    extracted_links = []
+
     llm_model = get_llm_model()
     logger.info(f"Setting up agents with LLM model: {llm_model}")
+    logger.info("Research agent: Firecrawl MCP (firecrawl_search) + direct search fallback")
 
     researcher = Agent(
         name="Research Agent",
         role="Web searcher and data collector",
         goal="Conduct deep recursive web research",
         backstory="Expert in online information mining and query generation",
-        tools=[firecrawl_search],
+        mcps=[get_firecrawl_mcp_config()],
+        tools=[firecrawl_search_direct, gemini_knowledge_fallback],
         llm=llm_model,
         verbose=True,
-        allow_delegation=False
+        allow_delegation=False,
     )
 
     summarizer = Agent(
@@ -100,7 +135,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         tools=[],
         llm=llm_model,
         verbose=True,
-        allow_delegation=True
+        allow_delegation=False,
     )
 
     presenter = Agent(
@@ -111,52 +146,65 @@ def setup_agents_and_tasks(query, breadth, depth):
         tools=[],
         llm=llm_model,
         verbose=True,
-        allow_delegation=True
+        allow_delegation=False,
     )
 
-    # Build research description based on breadth and depth
     breadth_instruction = f"Generate {breadth} different search queries or angles to explore this topic thoroughly."
-    depth_instruction = f"For each angle, perform {depth} levels of investigation (initial search + {depth-1} follow-up searches on interesting findings)."
-    
+    depth_instruction = (
+        f"For each angle, perform {depth} levels of investigation "
+        f"(initial search + {depth - 1} follow-up searches on interesting findings)."
+    )
+
     task_research = Task(
         description=f"""Perform comprehensive research on: {query}
-        
+
         Research Parameters:
         - {breadth_instruction}
         - {depth_instruction}
-        
-        For example, if breadth=3 and depth=2:
-        - Generate 3 different search angles
-        - For each angle, do initial search + 1 follow-up on most relevant finding
-        
-        Ensure you explore the topic from multiple perspectives and dig deep into each one.""",
+
+        Search strategy (in order):
+        1. Try firecrawl_search MCP tool with limit=3 per query.
+        2. If MCP times out or fails, use FirecrawlSearchDirect for the same query.
+        3. Only use GeminiKnowledgeFallback if both search methods fail.
+
+        Include source URLs in your notes whenever available.
+
+        Ensure you explore the topic from multiple perspectives.""",
         expected_output="Raw web content from multiple search angles, source links, and detailed notes organized by search angle",
-        agent=researcher
+        agent=researcher,
     )
 
     task_summarize = Task(
-        description="Summarize the research findings into structured points.",
+        description=(
+            "Summarize the research findings from the previous task into structured bullet points. "
+            "Do not ask the user for more information."
+        ),
         expected_output="Summarized bullets categorized by topic",
-        agent=summarizer
+        agent=summarizer,
+        context=[task_research],
     )
 
     task_present = Task(
-        description="Format all summaries into a professional report.",
-        expected_output="A final human-readable report",
-        agent=presenter
+        description=(
+            "Using the summary from the previous task, write a complete professional research report. "
+            "Include sections: Introduction, Key Findings, and Conclusion. "
+            "Cite source URLs when available; if none exist, state that findings are from general knowledge. "
+            "Never ask the user for input — always deliver the full report."
+        ),
+        expected_output="A complete final human-readable report (at least 3 paragraphs)",
+        agent=presenter,
+        context=[task_summarize],
     )
 
-    # Scale max_steps based on breadth and depth
-    # Each breadth*depth combo needs approximately 5-10 steps
     max_steps = max(20, breadth * depth * 7)
-    max_time = max(300, breadth * depth * 60)  # ~1 min per breadth*depth unit
-    
+    max_time = max(300, breadth * depth * 60)
+
     crew = Crew(
         agents=[researcher, summarizer, presenter],
         tasks=[task_research, task_summarize, task_present],
         verbose=True,
         max_steps=max_steps,
-        max_time=max_time
+        max_time=max_time,
     )
 
-    return crew, researcher, firecrawl_search
+    return crew

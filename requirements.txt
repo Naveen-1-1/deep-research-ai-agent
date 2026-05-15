@@ -4,3 +4,6 @@ google-generativeai
 langchain-google-genai
 langchain
 reportlab
+mcp
+python-dotenv
+requests

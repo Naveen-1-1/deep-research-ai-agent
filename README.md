@@ -11,7 +11,7 @@ An intelligent multi-agent research system powered by CrewAI and Google Gemini t
   - Summarization Agent: Structures and condenses findings
   - Presentation Agent: Formats professional reports
 - **Google Gemini Integration**: Powered by Gemini 2.5 Flash Lite for fast, efficient AI processing
-- **Web Research via Firecrawl**: Comprehensive web searches with automatic link extraction
+- **Web Research via Firecrawl MCP**: Web search through the official Firecrawl MCP server (`firecrawl_search`)
 - **Intelligent Fallback**: If web search fails, Gemini provides direct answers
 - **Configurable Research Parameters**: Adjustable breadth and depth for customized research
 - **PDF Report Generation**: Automatic creation of downloadable, formatted PDF reports
@@ -26,14 +26,15 @@ An intelligent multi-agent research system powered by CrewAI and Google Gemini t
 ```
 User Query → Research Agent → Summarization Agent → Presentation Agent → PDF Report
                     ↓
-              Firecrawl API
+         Firecrawl MCP Server (firecrawl_search)
                     ↓
             Google Gemini Fallback
 ```
 
 **Research Agent**
 - Role: Web searcher and data collector
-- Tools: Firecrawl search with Gemini fallback
+- MCP: [Firecrawl MCP](https://www.firecrawl.dev/mcp) (`firecrawl_search` via hosted endpoint)
+- Fallback: Gemini knowledge tool when search is unavailable
 - Performs recursive web searches based on breadth and depth parameters
 
 **Summarization Agent**
@@ -160,7 +161,8 @@ deep-research-ai-agent/
 | **Multi-Agent Framework** | [CrewAI](https://www.crewai.com/) |
 | **Web Interface** | [Streamlit](https://streamlit.io/) |
 | **Language Model** | [Google Gemini 2.5 Flash Lite](https://ai.google.dev/) |
-| **Web Search** | [Firecrawl API](https://www.firecrawl.dev/) |
+| **Web Search** | [Firecrawl MCP Server](https://www.firecrawl.dev/mcp) |
+| **MCP Protocol** | [Model Context Protocol](https://modelcontextprotocol.io/) |
 | **LLM Integration** | [LangChain](https://langchain.com/) |
 | **PDF Generation** | [ReportLab](https://www.reportlab.com/) |
 
@@ -175,9 +177,9 @@ deep-research-ai-agent/
 
 2. **Research Phase**
    - Research Agent receives user query
-   - Performs web searches using Firecrawl API
+   - Performs web searches using the Firecrawl MCP `firecrawl_search` tool
    - If search fails, falls back to Gemini for direct answers
-   - Extracts and stores source URLs
+   - Source URLs are extracted from the final report for the PDF
 
 3. **Summarization Phase**
    - Summarization Agent processes raw research data
@@ -219,10 +221,12 @@ pip install "crewai[google-genai]"
 - Check for typos or extra spaces in the key
 - Verify the key is active at [Google AI Studio](https://makersuite.google.com/)
 
-**"Firecrawl API request failed"**
+**"Firecrawl API key is not configured" or MCP connection errors**
 - Verify `FIRECRAWL_KEY` is correct in `.env`
-- Check your Firecrawl API quota/credits
-- System will automatically use Gemini fallback
+- Check your Firecrawl API quota/credits at [firecrawl.dev](https://www.firecrawl.dev/)
+- Ensure `mcp` is installed: `pip install mcp`
+- The app uses the hosted MCP URL: `https://mcp.firecrawl.dev/{FIRECRAWL_KEY}/v2/mcp`
+- System will use Gemini fallback when search is insufficient
 
 **Model name errors (404 NOT_FOUND)**
 - The code uses `gemini-2.5-flash-lite`
