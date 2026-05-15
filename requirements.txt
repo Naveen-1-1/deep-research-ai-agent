@@ -7,3 +7,4 @@ reportlab
 mcp
 python-dotenv
 requests
+litellm

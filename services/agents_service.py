@@ -22,19 +22,61 @@ FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b").strip()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+
 logger = logging.getLogger(__name__)
 
 extracted_links: list[str] = []
 
 
-def get_llm_model():
-    """Returns the LLM model string for CrewAI (LiteLLM / Gemini)."""
+def _ollama_chat_completion(user_text: str, temperature: float = 0.3) -> str | None:
+    """Call Ollama /api/chat. Returns None on failure."""
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": user_text}],
+                "stream": False,
+                "options": {"temperature": temperature},
+            },
+            timeout=300,
+        )
+        if resp.status_code != 200:
+            logger.error("Ollama chat failed: %s %s", resp.status_code, redact_secrets(resp.text[:300]))
+            return None
+        data = resp.json()
+        msg = data.get("message") or {}
+        content = msg.get("content")
+        return content if isinstance(content, str) else str(content)
+    except Exception as e:
+        logger.error("Ollama chat error: %s", redact_secrets(str(e)))
+        return None
+
+
+def get_llm_model() -> str:
+    """
+    LiteLLM/CrewAI provider string.
+    - gemini (default): needs GOOGLE_API_KEY
+    - ollama/local: needs Ollama running; set OLLAMA_MODEL
+    """
+    if LLM_PROVIDER in ("ollama", "local"):
+        logger.info("Using Ollama model: %s (base: %s)", OLLAMA_MODEL, OLLAMA_BASE_URL)
+        os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
+        return f"ollama/{OLLAMA_MODEL}"
+
     if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
         logger.info("Using Google Gemini model: %s", GEMINI_MODEL)
         if not os.getenv("GEMINI_API_KEY"):
             os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
         return f"gemini/{GEMINI_MODEL}"
-    raise ValueError("Google API key is not configured. Please set GOOGLE_API_KEY in .env file.")
+
+    raise ValueError(
+        "Configure LLM_PROVIDER=gemini with GOOGLE_API_KEY, "
+        "or LLM_PROVIDER=ollama with OLLAMA_MODEL and running Ollama."
+    )
 
 
 def get_firecrawl_mcp_config():
@@ -81,30 +123,42 @@ def firecrawl_search_direct(query: str) -> str:
         return f"Direct Firecrawl search error: {redact_secrets(str(e))}"
 
 
-@tool("GeminiKnowledgeFallback")
-def gemini_knowledge_fallback(query: str) -> str:
+@tool("KnowledgeFallback")
+def knowledge_fallback(query: str) -> str:
     """Provide background knowledge when web search is unavailable or insufficient."""
-    if not GOOGLE_API_KEY or not GOOGLE_API_KEY.strip():
-        return f"No fallback LLM available. Query was: {query}"
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0.3,
-            convert_system_message_to_human=True,
-        )
-        response = llm.invoke([
-            HumanMessage(
-                content=(
-                    f"Please provide a clear explanation about: {query}. "
-                    "Include definition, features, and common use cases."
-                )
+    if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model=GEMINI_MODEL,
+                google_api_key=GOOGLE_API_KEY,
+                temperature=0.3,
+                convert_system_message_to_human=True,
             )
-        ])
-        return response.content
-    except Exception as e:
-        logger.error(f"Gemini fallback failed: {e}")
-        return f"LLM fallback unavailable. Query was: {query}"
+            response = llm.invoke([
+                HumanMessage(
+                    content=(
+                        f"Please provide a clear explanation about: {query}. "
+                        "Include definition, features, and common use cases."
+                    )
+                )
+            ])
+            return response.content
+        except Exception as e:
+            logger.error("Gemini fallback failed: %s", redact_secrets(str(e)))
+
+    reply = _ollama_chat_completion(
+        f"Please provide a clear explanation about: {query}. "
+        "Include definition, features, and common use cases.",
+    )
+    if reply:
+        return reply
+
+    if not GOOGLE_API_KEY or not GOOGLE_API_KEY.strip():
+        return (
+            "No fallback LLM: set GOOGLE_API_KEY for Gemini, or ensure Ollama is running "
+            f"at {OLLAMA_BASE_URL} with model {OLLAMA_MODEL}. Query was: {query}"
+        )
+    return f"LLM fallback unavailable. Query was: {query}"
 
 
 def setup_agents_and_tasks(query, breadth, depth):
@@ -115,21 +169,21 @@ def setup_agents_and_tasks(query, breadth, depth):
     mcp_config = get_firecrawl_mcp_config()
     mcps = [mcp_config] if mcp_config else []
 
-    logger.info(f"Setting up agents with LLM model: {llm_model}")
+    logger.info(f"Setting up agents with LLM: {llm_model}")
     if mcp_config:
         logger.info("Research agent: Firecrawl MCP (firecrawl_search) + direct search fallback")
     else:
-        logger.info("Research agent: FirecrawlSearchDirect REST + Gemini fallback (no MCP)")
+        logger.info("Research agent: FirecrawlSearchDirect REST + KnowledgeFallback (no MCP)")
 
     if mcp_config:
         search_strategy = """Search strategy (in order):
         1. Try firecrawl_search MCP tool with limit=3 per query.
         2. If MCP times out or fails, use FirecrawlSearchDirect for the same query.
-        3. Only use GeminiKnowledgeFallback if both search methods fail."""
+        3. Only use KnowledgeFallback if both search methods fail."""
     else:
         search_strategy = """Search strategy (in order):
         1. Use FirecrawlSearchDirect for all web searches (limit=5 per query).
-        2. Only use GeminiKnowledgeFallback if search fails."""
+        2. Only use KnowledgeFallback if search fails."""
 
     researcher = Agent(
         name="Research Agent",
@@ -137,11 +191,11 @@ def setup_agents_and_tasks(query, breadth, depth):
         goal="Conduct deep recursive web research",
         backstory="Expert in online information mining and query generation",
         mcps=mcps,
-        tools=[firecrawl_search_direct, gemini_knowledge_fallback],
+        tools=[firecrawl_search_direct, knowledge_fallback],
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
-        max_retry_limit=0,
+        max_retry_limit=2,
     )
 
     summarizer = Agent(
@@ -153,7 +207,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
-        max_retry_limit=0,
+        max_retry_limit=2,
     )
 
     presenter = Agent(
@@ -165,7 +219,7 @@ def setup_agents_and_tasks(query, breadth, depth):
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
-        max_retry_limit=0,
+        max_retry_limit=2,
     )
 
     breadth_instruction = f"Generate {breadth} different search queries or angles to explore this topic thoroughly."
