@@ -1,17 +1,17 @@
 from crewai import Crew, Agent, Task
 from crewai.tools import tool
-from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+import asyncio
 import json
 import logging
 import os
 
-import requests
 from dotenv import load_dotenv
 
-from utils.log_sanitizer import configure_safe_logging, redact_secrets, register_secrets_from_env
-from utils.mcp_config import build_firecrawl_mcp_config
+from services.firecrawl_mcp import mcp_available, mcp_firecrawl_search
+from utils.log_sanitizer import configure_safe_logging, register_secrets_from_env
 from utils.crewai_safe_console import patch_crewai_console_redaction
+from utils.tool_names import TOOL_FIRECRAWL_SEARCH
+from utils.llm_config import LLM_PROVIDER, get_crew_llm_model
 
 load_dotenv()
 configure_safe_logging()
@@ -19,75 +19,13 @@ register_secrets_from_env()
 patch_crewai_console_redaction()
 
 FIRECRAWL_KEY = os.getenv("FIRECRAWL_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
-
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b").strip()
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
 logger = logging.getLogger(__name__)
 
 extracted_links: list[str] = []
 
 
-def _ollama_chat_completion(user_text: str, temperature: float = 0.3) -> str | None:
-    """Call Ollama /api/chat. Returns None on failure."""
-    try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": [{"role": "user", "content": user_text}],
-                "stream": False,
-                "options": {"temperature": temperature},
-            },
-            timeout=300,
-        )
-        if resp.status_code != 200:
-            logger.error("Ollama chat failed: %s %s", resp.status_code, redact_secrets(resp.text[:300]))
-            return None
-        data = resp.json()
-        msg = data.get("message") or {}
-        content = msg.get("content")
-        return content if isinstance(content, str) else str(content)
-    except Exception as e:
-        logger.error("Ollama chat error: %s", redact_secrets(str(e)))
-        return None
-
-
-def get_llm_model() -> str:
-    """
-    LiteLLM/CrewAI provider string.
-    - gemini (default): needs GOOGLE_API_KEY
-    - ollama/local: needs Ollama running; set OLLAMA_MODEL
-    """
-    if LLM_PROVIDER in ("ollama", "local"):
-        logger.info("Using Ollama model: %s (base: %s)", OLLAMA_MODEL, OLLAMA_BASE_URL)
-        os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
-        return f"ollama/{OLLAMA_MODEL}"
-
-    if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
-        logger.info("Using Google Gemini model: %s", GEMINI_MODEL)
-        if not os.getenv("GEMINI_API_KEY"):
-            os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
-        return f"gemini/{GEMINI_MODEL}"
-
-    raise ValueError(
-        "Configure LLM_PROVIDER=gemini with GOOGLE_API_KEY, "
-        "or LLM_PROVIDER=ollama with OLLAMA_MODEL and running Ollama."
-    )
-
-
-def get_firecrawl_mcp_config():
-    """Firecrawl MCP via stdio when npx is available; otherwise None (use REST tool)."""
-    if not FIRECRAWL_KEY or not FIRECRAWL_KEY.strip():
-        raise ValueError("Firecrawl API key is not configured. Please set FIRECRAWL_KEY in .env file.")
-    return build_firecrawl_mcp_config(FIRECRAWL_KEY.strip())
-
-
 def _collect_urls_from_payload(payload) -> None:
-    """Append URLs found in search/MCP JSON responses to extracted_links."""
     if isinstance(payload, dict):
         for key, value in payload.items():
             if key in ("url", "sourceURL", "source_url") and isinstance(value, str) and value.startswith("http"):
@@ -100,98 +38,65 @@ def _collect_urls_from_payload(payload) -> None:
             _collect_urls_from_payload(item)
 
 
-@tool("FirecrawlSearchDirect")
-def firecrawl_search_direct(query: str) -> str:
-    """Fast direct Firecrawl web search. Use when the MCP search tool times out or fails."""
+def _attach_urls_from_result(result: str) -> str:
     try:
-        response = requests.post(
-            "https://api.firecrawl.dev/v1/search",
-            headers={
-                "Authorization": f"Bearer {FIRECRAWL_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"query": query, "limit": 5},
-            timeout=45,
-        )
-        if response.status_code == 200:
-            data = response.json()
-            _collect_urls_from_payload(data)
-            return json.dumps(data, indent=2)
-        return f"Firecrawl search failed ({response.status_code}): {redact_secrets(response.text[:500])}"
-    except Exception as e:
-        logger.error("Direct Firecrawl search failed: %s", redact_secrets(str(e)))
-        return f"Direct Firecrawl search error: {redact_secrets(str(e))}"
+        _collect_urls_from_payload(json.loads(result))
+    except (json.JSONDecodeError, TypeError):
+        _collect_urls_from_payload(result)
+    return result
 
 
-@tool("KnowledgeFallback")
-def knowledge_fallback(query: str) -> str:
-    """Provide background knowledge when web search is unavailable or insufficient."""
-    if GOOGLE_API_KEY and GOOGLE_API_KEY.strip():
-        try:
-            llm = ChatGoogleGenerativeAI(
-                model=GEMINI_MODEL,
-                google_api_key=GOOGLE_API_KEY,
-                temperature=0.3,
-                convert_system_message_to_human=True,
-            )
-            response = llm.invoke([
-                HumanMessage(
-                    content=(
-                        f"Please provide a clear explanation about: {query}. "
-                        "Include definition, features, and common use cases."
-                    )
-                )
-            ])
-            return response.content
-        except Exception as e:
-            logger.error("Gemini fallback failed: %s", redact_secrets(str(e)))
+@tool(TOOL_FIRECRAWL_SEARCH)
+def firecrawl_search(query: str, limit: int = 3) -> str:
+    """
+    Search the web via Firecrawl MCP. Use for all web research.
+    Args: query (required), limit (optional, default 3).
+    """
+    if not FIRECRAWL_KEY or not FIRECRAWL_KEY.strip():
+        return "FIRECRAWL_KEY is not configured."
+    if not mcp_available():
+        return "MCP not available. Install Node.js (npx) for firecrawl-mcp."
+    try:
+        result = asyncio.run(mcp_firecrawl_search(query, limit))
+        return _attach_urls_from_result(result)
+    except Exception as exc:
+        from utils.log_sanitizer import redact_secrets
 
-    reply = _ollama_chat_completion(
-        f"Please provide a clear explanation about: {query}. "
-        "Include definition, features, and common use cases.",
-    )
-    if reply:
-        return reply
-
-    if not GOOGLE_API_KEY or not GOOGLE_API_KEY.strip():
-        return (
-            "No fallback LLM: set GOOGLE_API_KEY for Gemini, or ensure Ollama is running "
-            f"at {OLLAMA_BASE_URL} with model {OLLAMA_MODEL}. Query was: {query}"
-        )
-    return f"LLM fallback unavailable. Query was: {query}"
+        logger.warning("MCP search failed: %s", redact_secrets(str(exc)))
+        return f"MCP search failed: {redact_secrets(str(exc))}"
 
 
 def setup_agents_and_tasks(query, breadth, depth):
     global extracted_links
     extracted_links = []
 
-    llm_model = get_llm_model()
-    mcp_config = get_firecrawl_mcp_config()
-    mcps = [mcp_config] if mcp_config else []
+    if not FIRECRAWL_KEY or not FIRECRAWL_KEY.strip():
+        raise ValueError("Firecrawl API key is not configured. Please set FIRECRAWL_KEY in .env file.")
 
-    logger.info(f"Setting up agents with LLM: {llm_model}")
-    if mcp_config:
-        logger.info("Research agent: Firecrawl MCP (firecrawl_search) + direct search fallback")
-    else:
-        logger.info("Research agent: FirecrawlSearchDirect REST + KnowledgeFallback (no MCP)")
+    if not mcp_available():
+        raise ValueError(
+            "Firecrawl MCP requires npx (Node.js). Install Node or set NPX_PATH in .env."
+        )
 
-    if mcp_config:
-        search_strategy = """Search strategy (in order):
-        1. Try firecrawl_search MCP tool with limit=3 per query.
-        2. If MCP times out or fails, use FirecrawlSearchDirect for the same query.
-        3. Only use KnowledgeFallback if both search methods fail."""
-    else:
-        search_strategy = """Search strategy (in order):
-        1. Use FirecrawlSearchDirect for all web searches (limit=5 per query).
-        2. Only use KnowledgeFallback if search fails."""
+    llm_model = get_crew_llm_model()
+    logger.info("Crew agents LLM (%s): %s", LLM_PROVIDER, llm_model)
+    logger.info("Research tool: %s (MCP only)", TOOL_FIRECRAWL_SEARCH)
+
+    search_strategy = f"""Search strategy:
+        - Use only `{TOOL_FIRECRAWL_SEARCH}` for web research (pass `query` and optional `limit`).
+        - After each search, copy titles and URLs from the tool output into your notes.
+        - Your final answer must list real URLs from tool results. Never invent links."""
 
     researcher = Agent(
         name="Research Agent",
         role="Web searcher and data collector",
-        goal="Conduct deep recursive web research",
-        backstory="Expert in online information mining and query generation",
-        mcps=mcps,
-        tools=[firecrawl_search_direct, knowledge_fallback],
+        goal=f"Research topics using only {TOOL_FIRECRAWL_SEARCH}",
+        backstory=(
+            f"You only use `{TOOL_FIRECRAWL_SEARCH}`. "
+            "Synthesize tool JSON into notes with cited URLs."
+        ),
+        mcps=[],
+        tools=[firecrawl_search],
         llm=llm_model,
         verbose=True,
         allow_delegation=False,
@@ -237,8 +142,6 @@ def setup_agents_and_tasks(query, breadth, depth):
 
         {search_strategy}
 
-        Include source URLs in your notes whenever available.
-
         Ensure you explore the topic from multiple perspectives.""",
         expected_output="Raw web content from multiple search angles, source links, and detailed notes organized by search angle",
         agent=researcher,
@@ -247,9 +150,9 @@ def setup_agents_and_tasks(query, breadth, depth):
     task_summarize = Task(
         description=(
             "Summarize the research findings from the previous task into structured bullet points. "
-            "Do not ask the user for more information."
+            "Use only facts and URLs from that context. Do not ask the user for more information."
         ),
-        expected_output="Summarized bullets categorized by topic",
+        expected_output="Summarized bullets categorized by topic with cited URLs where available",
         agent=summarizer,
         context=[task_research],
     )
@@ -258,7 +161,8 @@ def setup_agents_and_tasks(query, breadth, depth):
         description=(
             "Using the summary from the previous task, write a complete professional research report. "
             "Include sections: Introduction, Key Findings, and Conclusion. "
-            "Cite source URLs when available; if none exist, state that findings are from general knowledge. "
+            "Cite source URLs from the research context. "
+            "Never use placeholder URLs (example.com). "
             "Never ask the user for input — always deliver the full report."
         ),
         expected_output="A complete final human-readable report (at least 3 paragraphs)",

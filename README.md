@@ -1,310 +1,265 @@
 # 🤖 Deep Research AI Agent
 
-An intelligent multi-agent research system powered by **CrewAI** with **Google Gemini** or **local Ollama** (LiteLLM). It performs web research via Firecrawl, analyzes results, and generates professional PDF reports.
+An intelligent multi-agent research system powered by **CrewAI**. It performs web research via **Firecrawl MCP**, analyzes results with **Ollama** (default) or **Google Gemini**, and generates professional PDF reports.
 
 ![Deep Research AI Agent UI](assets/ai-agent-research-ui.png)
 
 ## ✨ Features
 
-- **Multi-Agent Architecture**: Three specialized CrewAI agents working together:
-  - Research Agent: Conducts deep web searches
-  - Summarization Agent: Structures and condenses findings
-  - Presentation Agent: Formats professional reports
-- **Google Gemini or local Ollama**: Cloud LLM (`LLM_PROVIDER=gemini`) or local (`LLM_PROVIDER=ollama`) for all agents via LiteLLM
-- **Web Research via Firecrawl MCP**: Web search through the official Firecrawl MCP server (`firecrawl_search`)
-- **Intelligent Fallback**: If web search fails, **KnowledgeFallback** uses Gemini (if configured) or your local Ollama model
-- **Configurable Research Parameters**: Adjustable breadth and depth for customized research
-- **PDF Report Generation**: Automatic creation of downloadable, formatted PDF reports
-- **Real-time Progress**: Watch agents work through the research process in real-time
-- **Markdown Cleaning**: Clean, readable output with proper formatting
-- **Source Citations**: Automatic extraction and listing of research sources
+- **Multi-Agent Architecture**: Three specialized CrewAI agents:
+  - **Research Agent** — web search via `firecrawl_search`
+  - **Summarization Agent** — structured bullet summaries
+  - **Presentation Agent** — professional report formatting
+- **Single LLM provider** — `LLM_PROVIDER=ollama` (default) or `gemini` for all agents ([`utils/llm_config.py`](utils/llm_config.py))
+- **Firecrawl MCP search** — one tool, `firecrawl_search`, backed by `npx` + `firecrawl-mcp` ([`services/firecrawl_mcp.py`](services/firecrawl_mcp.py))
+- **Configurable research** — adjustable breadth and depth
+- **PDF reports** — downloadable ReportLab output with source links
+- **Log safety** — API keys redacted in logs and CrewAI console output
 
 ## 🏗️ Architecture
 
-### Multi-Agent System
-
 ```
-User Query → Research Agent → Summarization Agent → Presentation Agent → PDF Report
-                    ↓
-         Firecrawl MCP Server (firecrawl_search)
-                    ↓
-            Google Gemini / Ollama KnowledgeFallback
+User Query (Streamlit)
+       ↓
+Research Agent  ──tool──►  firecrawl_search
+       │                        ↓
+       │              services/firecrawl_mcp.py
+       │                        ↓
+       │              npx -y firecrawl-mcp (stdio MCP)
+       ↓
+Summarization Agent  →  Presentation Agent  →  PDF
+       ↑
+  Same LLM (Ollama or Gemini via LiteLLM)
 ```
 
 **Research Agent**
-- Role: Web searcher and data collector
-- MCP: [Firecrawl MCP](https://www.firecrawl.dev/mcp) (`firecrawl_search`) — **stdio** when `npx` is available; otherwise **FirecrawlSearchDirect** REST (`FIRECRAWL_MCP_TRANSPORT=http` enables hosted MCP)
-- Fallback: **KnowledgeFallback** (Gemini if `GOOGLE_API_KEY` set, else Ollama)
-- Performs recursive web searches based on breadth and depth parameters
-- Agents use CrewAI `max_retry_limit=2` for task execution errors
 
-**Summarization Agent**
-- Role: Content summarizer
-- Condenses research findings into structured, categorized points
-- Maintains accuracy while improving readability
+- Only tool: **`firecrawl_search`** (see [`utils/tool_names.py`](utils/tool_names.py))
+- MCP is **not** attached via CrewAI `mcps=`; the tool calls Firecrawl directly
+- Requires **Node.js / `npx`** and `FIRECRAWL_KEY`
+- `max_retry_limit=2` on task errors
 
-**Presentation Agent**
-- Role: Report formatter
-- Creates polished, professional research reports
-- Ensures consistency and proper structure
+**Summarization & Presentation Agents**
 
-### LLM provider
+- No tools; same `LLM_PROVIDER` as the researcher
+- Turn research notes into bullets, then a full report with cited URLs
 
-- **Gemini** (default): set `LLM_PROVIDER=gemini` and `GOOGLE_API_KEY`. Model name via `GEMINI_MODEL`.
-- **Ollama**: set `LLM_PROVIDER=ollama`, run Ollama locally, set `OLLAMA_MODEL` (default `qwen2.5:3b` for speed; see README for faster tiers).
+### LLM provider (one only)
 
-Used for all agent reasoning and for **KnowledgeFallback** when web search is insufficient (Gemini preferred when the key is present, then Ollama).
+Set **`LLM_PROVIDER`** to **`ollama`** or **`gemini`**. All agents use the same model string from [`utils/llm_config.py`](utils/llm_config.py). There is no mixing (e.g. Ollama for one agent and Gemini for another).
+
+| `LLM_PROVIDER` | Required in `.env` |
+|----------------|-------------------|
+| **`ollama`** (default) | `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, Ollama running locally |
+| **`gemini`** | `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
+
+Copy [`.env.example`](.env.example) to `.env` and configure **one** provider block.
 
 ## 📋 Prerequisites
 
-- Python 3.13+ (recommended: Python 3.11–3.13 for widest package support)
-- pip package manager
-- API Keys / runtime:
-  - **Firecrawl** (required for web search)
-  - **Google API Key** (required when `LLM_PROVIDER=gemini`; optional otherwise for Gemini **KnowledgeFallback**)
-  - **Ollama** (required when `LLM_PROVIDER=ollama`)
+- **Python 3.11–3.13** (3.13+ supported; 3.11–3.13 recommended for package compatibility)
+- **pip** and a virtual environment
+- **Firecrawl API key** — always required
+- **Node.js / `npx`** — required to run `firecrawl-mcp`
+- **Ollama** — when `LLM_PROVIDER=ollama`
+- **Google API key** — when `LLM_PROVIDER=gemini`
 
 ## 🚀 Installation
 
 1. **Clone the repository**
+
 ```bash
 git clone <your-repo-url>
 cd deep-research-ai-agent
 ```
 
-2. **Create and activate virtual environment**
+2. **Create and activate a virtual environment**
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 ```
 
 3. **Install dependencies**
+
 ```bash
 pip install -r requirements.txt
 ```
 
-## ⚙️ Configuration
+4. **Configure environment**
 
-Create a **`.env`** file in the project root.
-
-### Gemini (default)
-
-```env
-LLM_PROVIDER=gemini
-GOOGLE_API_KEY=your-google-api-key-here
-FIRECRAWL_KEY=your-firecrawl-api-key-here
-GEMINI_MODEL=gemini-2.5-flash-lite
+```bash
+cp .env.example .env
+# Edit .env — set LLM_PROVIDER, keys, and model names
 ```
 
-### Ollama (local LLM)
+## ⚙️ Configuration
 
-1. Install [Ollama](https://ollama.com/) and pull a model. Suggested tiers by **speed** (fastest → slowest on Mac):
-
-| Speed (typical) | Pull command | Notes |
-|-----------------|---------------|--------|
-| Fastest | `ollama pull qwen2.5:1.5b` | Lowest latency; weakest multi-step tools |
-| **Default in code** | `ollama pull qwen2.5:3b` | Good balance for this app |
-| Balanced | `ollama pull llama3.2:3b` | Alternative 3B |
-| Slower, smarter | `ollama pull qwen2.5:7b` | Closer to cloud quality, not Flash speed |
-
-2. Set in `.env`:
+### Ollama (default)
 
 ```env
 LLM_PROVIDER=ollama
-OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_MODEL=qwen3:8b
 OLLAMA_BASE_URL=http://localhost:11434
 FIRECRAWL_KEY=your-firecrawl-api-key-here
 ```
 
-Override `OLLAMA_MODEL` if you pulled a different tag (e.g. `qwen2.5:1.5b` for maximum speed).
+Install [Ollama](https://ollama.com/) and pull your model: `ollama pull qwen3:8b`
 
-Optional: **KnowledgeFallback** still uses Gemini if you add `GOOGLE_API_KEY` (tries Gemini first, then local Ollama).
+### Gemini (optional)
 
-Keep `pip install -r requirements.txt`; **litellm** is listed for CrewAI routing to Ollama.
+```env
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=your-google-api-key-here
+GEMINI_MODEL=gemini-2.5-flash-lite
+FIRECRAWL_KEY=your-firecrawl-api-key-here
+```
 
-Gemini stays the default when `LLM_PROVIDER` is omitted or `gemini`.
+Optional: `NPX_PATH=/full/path/to/npx` if `npx` is not on your `PATH`.
 
-### Getting API Keys
+### Getting API keys
 
-**Google AI (Gemini)**
-1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Sign in with your Google account
-3. Click "Create API Key"
-4. Copy the key and paste it in your `.env` file
+**Google AI (Gemini)** — [Google AI Studio](https://aistudio.google.com/apikey)
 
-**Firecrawl**
-1. Visit [Firecrawl](https://www.firecrawl.dev/)
-2. Sign up for an account
-3. Navigate to API settings
-4. Copy your API key and paste it in your `.env` file
+**Firecrawl** — [firecrawl.dev](https://www.firecrawl.dev/) → API settings
 
 ## 🎯 Usage
 
-### Starting the Application
+### Start the app
 
 ```bash
 streamlit run main.py
 ```
 
-The application will open in your default browser at `http://localhost:8501`
+Opens at `http://localhost:8501`
 
-### Conducting Research
+### Run a research job
 
-1. **Enter Research Query**: Type your research topic in the text input field
-2. **Configure Parameters** (defaults: **Breadth 3**, **Depth 2**):
-   - **Search Breadth** (1-10): Number of different search queries to perform
-   - **Search Depth** (1-5): How deep to recurse into each search
-3. **Click "Run Deep Research"**
-4. **Monitor Progress**: Watch agents work in real-time
-5. **Review Results**: 
-   - Read the formatted report in the text area
-   - Preview the PDF in the embedded viewer
-   - Download the PDF report using the download button
+1. Enter a **research query**
+2. Set **Search Breadth** (1–10, default **3**) and **Search Depth** (1–5, default **2**)
+3. Click **Run Deep Research**
+4. Watch agent progress in the terminal
+5. Read the report, preview the PDF, and download
 
-### Research Parameters Explained
+**Breadth** = number of search angles. **Depth** = follow-up searches per angle.
 
-- **Breadth = 3, Depth = 2** (Default): Balanced research with moderate coverage
-- **Breadth = 10, Depth = 5**: Comprehensive, exhaustive research (slower)
-- **Breadth = 1, Depth = 1**: Quick, focused research on a specific topic
-
-## 📦 Project Structure
+## 📦 Project structure
 
 ```
 deep-research-ai-agent/
-├── main.py                      # Streamlit UI application
+├── main.py                      # Streamlit UI
 ├── controllers/
-│   └── research_controller.py   # Orchestrates research workflow
+│   └── research_controller.py   # Crew kickoff, PDF assembly
 ├── services/
-│   └── agents_service.py        # CrewAI agents, LLM provider, Firecrawl tools
+│   ├── agents_service.py        # CrewAI agents, tasks, firecrawl_search tool
+│   └── firecrawl_mcp.py         # MCP client (firecrawl_search calls)
 ├── models/
-│   └── pdf_generator.py         # PDF report generation with ReportLab
+│   └── pdf_generator.py         # ReportLab PDF
 ├── utils/
-│   ├── markdown_cleaner.py      # Markdown cleanup + URL extraction
-│   ├── log_sanitizer.py         # Redact secrets in logs
-│   ├── mcp_config.py            # Firecrawl MCP transport (stdio / HTTP)
-│   └── crewai_safe_console.py   # Redact secrets in CrewAI Rich UI
+│   ├── llm_config.py            # LLM_PROVIDER → LiteLLM model string
+│   ├── tool_names.py            # Canonical tool name constants
+│   ├── mcp_config.py            # find_npx() helper (+ legacy Crew MCP config)
+│   ├── markdown_cleaner.py        # Report cleanup, URL extraction
+│   ├── log_sanitizer.py         # Secret redaction in logs
+│   └── crewai_safe_console.py   # Secret redaction in CrewAI UI
 ├── assets/
-│   └── ai-agent-research-ui.png # Application screenshot
-├── requirements.txt             # Python dependencies
-├── .env                         # API keys (not tracked in git)
-├── .gitignore                   # Git ignore rules
-├── LICENSE                      # MIT License
-└── README.md                    # This file
+│   └── ai-agent-research-ui.png
+├── requirements.txt
+├── .env.example
+├── .gitignore
+├── LICENSE
+└── README.md
 ```
 
-## 🛠️ Technology Stack
+## 🛠️ Technology stack
 
 | Category | Technology |
-|----------|-----------|
-| **Multi-Agent Framework** | [CrewAI](https://www.crewai.com/) |
-| **Web Interface** | [Streamlit](https://streamlit.io/) |
-| **Language Model** | [Google Gemini](https://ai.google.dev/) or [Ollama](https://ollama.com/) (`LLM_PROVIDER` in `.env`) |
-| **LLM routing** | [LiteLLM](https://docs.litellm.ai/) (CrewAI `gemini/...`, `ollama/...`) |
-| **Web Search** | [Firecrawl](https://www.firecrawl.dev/) (MCP + REST) |
-| **MCP Protocol** | [Model Context Protocol](https://modelcontextprotocol.io/) |
-| **Extras** | [LangChain](https://langchain.com/) (e.g. KnowledgeFallback + Gemini) |
-| **PDF Generation** | [ReportLab](https://www.reportlab.com/) |
+|----------|------------|
+| Multi-agent framework | [CrewAI](https://www.crewai.com/) |
+| UI | [Streamlit](https://streamlit.io/) |
+| LLM routing | [LiteLLM](https://docs.litellm.ai/) (`ollama/...` or `gemini/...`) |
+| Local LLM | [Ollama](https://ollama.com/) |
+| Cloud LLM | [Google Gemini](https://ai.google.dev/) |
+| Web search | [Firecrawl](https://www.firecrawl.dev/) via [MCP](https://modelcontextprotocol.io/) |
+| MCP runtime | `firecrawl-mcp` (stdio through `npx`) |
+| PDF | [ReportLab](https://www.reportlab.com/) |
 
-## 🔍 How It Works
+## 🔍 How it works
 
-### Step-by-Step Process
-
-1. **Initialization**
-   - Load `.env` (`LLM_PROVIDER`, keys, `GEMINI_MODEL`, `OLLAMA_*`)
-   - Agents use the configured LLM (Gemini or Ollama via LiteLLM)
-   - Create three specialized agents (`max_retry_limit=2`)
-
-2. **Research Phase**
-   - Research Agent receives the query
-   - Web search via Firecrawl MCP `firecrawl_search` and/or **FirecrawlSearchDirect**
-   - If search fails, **KnowledgeFallback** (Gemini when key set, else Ollama HTTP API)
-   - Source URLs are collected for the PDF
-
-3. **Summarization Phase**
-   - Summarization Agent processes raw research data
-   - Structures findings into categorized points
-   - Maintains context while condensing information
-
-4. **Presentation Phase**
-   - Presentation Agent formats the final report
-   - Ensures readability and professional structure
-   - Adds proper headings and organization
-
-5. **Output Generation**
-   - Markdown cleaning removes formatting artifacts
-   - PDF report generated with ReportLab
-   - Source links compiled and included
-   - Report displayed in UI with download option
-
-## 🧪 Example Use Cases
-
-- **Academic Research**: Gather comprehensive information on scholarly topics
-- **Market Research**: Analyze trends, competitors, and market conditions
-- **Technical Documentation**: Research technologies and best practices
-- **News Analysis**: Compile information on current events from multiple sources
-- **Due Diligence**: Research companies, products, or services
-- **Literature Reviews**: Gather and summarize published research
+1. **Load config** — `.env` → [`llm_config.py`](utils/llm_config.py) picks one provider for all agents.
+2. **Research** — Research Agent calls **`firecrawl_search`**; [`firecrawl_mcp.py`](services/firecrawl_mcp.py) spawns `npx -y firecrawl-mcp` and runs `firecrawl_search` with your query.
+3. **URLs** — Search results are parsed; links are stored for the PDF.
+4. **Summarize** — Summarization Agent condenses the research task output.
+5. **Report** — Presentation Agent writes Introduction / Key Findings / Conclusion.
+6. **Deliver** — Markdown is cleaned; PDF is generated and shown in Streamlit.
 
 ## 🐛 Troubleshooting
 
-### Common Issues
+**`Invalid LLM_PROVIDER` or missing API key**
 
-**"Google Gen AI native provider not available"**
+- Use only `ollama` or `gemini` in `.env`
+- For `gemini`, set `GOOGLE_API_KEY`
+- For `ollama`, ensure `ollama serve` / Ollama app is running and `OLLAMA_MODEL` matches `ollama list`
+
+**`Firecrawl MCP requires npx` / MCP not available**
+
+- Install [Node.js](https://nodejs.org/) so `npx --version` works
+- Or set `NPX_PATH` in `.env` to the full path to `npx`
+
+**`Firecrawl API key is not configured`**
+
+- Set `FIRECRAWL_KEY` in `.env`
+
+**`Google Gen AI native provider not available`** (Gemini mode)
+
 ```bash
-pip uninstall crewai
 pip install "crewai[google-genai]"
 ```
 
-**"Google API key is not configured"**
-- Ensure `GOOGLE_API_KEY` is set in `.env` file
-- Check for typos or extra spaces in the key
-- Verify the key is active at [Google AI Studio](https://makersuite.google.com/)
+**Gemini `404` / model not found**
 
-**"Firecrawl API key is not configured" or MCP connection errors**
-- Verify `FIRECRAWL_KEY` is correct in `.env`
-- Check your Firecrawl API quota/credits at [firecrawl.dev](https://www.firecrawl.dev/)
-- Ensure `mcp` is installed: `pip install mcp`
-- Firecrawl MCP uses **stdio** when `npx` is installed (API key never in URLs)
-- Without Node.js: **FirecrawlSearchDirect** REST tool is used instead (no hosted MCP URL in logs)
-- Optional: `FIRECRAWL_MCP_TRANSPORT=http` forces hosted MCP (not recommended — key appears in URLs)
-- **KnowledgeFallback** runs when search is insufficient (Gemini and/or Ollama)
+- Set `GEMINI_MODEL` to a [supported model id](https://ai.google.dev/gemini-api/docs/models) (default: `gemini-2.5-flash-lite`)
 
-**Model name errors (404 NOT_FOUND)** (Gemini)
-- Set `GEMINI_MODEL` in `.env` to a [supported model id](https://ai.google.dev/gemini-api/docs/models); default is `gemini-2.5-flash-lite`
+**Ollama: `Invalid response from LLM call - None or empty`**
 
-**Ollama** — wrong model or not running
-- `ollama list` must include the tag in `OLLAMA_MODEL`; ensure the Ollama app is running
+- Common with smaller or “thinking” models under CrewAI tool-calling
+- Try a larger model (e.g. `qwen3:8b`) or `LLM_PROVIDER=gemini` for more reliable agent loops
+- `firecrawl_search` may still succeed in logs even if the agent fails to finish notes
 
-**Streamlit connection errors**
+**Ollama: research ignores search results**
+
+- Ensure the model follows tool output; try `gemini` or reduce breadth/depth for shorter runs
+
+**Streamlit port in use**
+
 ```bash
-streamlit run main.py --server.port 8502  # Try different port
+streamlit run main.py --server.port 8502
 ```
 
-## 📊 Performance Notes
+## 📊 Performance notes
 
-- **Average Research Time**: 1-3 minutes depending on parameters
-- **Breadth Impact**: Each additional breadth point adds ~15-30 seconds
-- **Depth Impact**: Each additional depth level adds ~10-20 seconds per query
-- **API Costs**: Gemini 2.5 Flash Lite is cost-effective (~$0.075 per 1M tokens)
+| Provider | Speed | Cost |
+|----------|--------|------|
+| **Ollama** | Depends on hardware and model size; local, no API token billing | Free (local compute) |
+| **Gemini** | Generally faster tool-calling for CrewAI | Billed per Google AI pricing; `gemini-2.5-flash-lite` is cost-effective |
+
+- Typical run: **1–5 minutes** depending on breadth, depth, and model
+- Each extra **breadth** adds searches (and MCP startup cost per tool call)
+- Firecrawl usage counts against your Firecrawl plan credits
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-**Copyright (c) 2025 Naveen Shankar**
+MIT License — see [LICENSE](LICENSE). **Copyright (c) 2025 Naveen Shankar**
 
 ## 🙏 Acknowledgments
 
-- [CrewAI](https://www.crewai.com/) for the multi-agent framework
-- [Google](https://ai.google.dev/) for Gemini AI
-- [Firecrawl](https://www.firecrawl.dev/) for web search capabilities
-- [Streamlit](https://streamlit.io/) for the elegant UI framework
+- [CrewAI](https://www.crewai.com/)
+- [Ollama](https://ollama.com/) and [Google Gemini](https://ai.google.dev/)
+- [Firecrawl](https://www.firecrawl.dev/) and the Firecrawl MCP server
+- [Streamlit](https://streamlit.io/)
 
-**⚠️ Important Notes:**
-- **Firecrawl** API key and quota are required for web search
-- For **Gemini** mode: Google API key and quota; monitor [Google AI Studio](https://makersuite.google.com/)
-- For **Ollama**: no Google quota; runs locally when `LLM_PROVIDER=ollama`
-- Research quality depends on Firecrawl and your chosen LLM
-- Generated reports should be reviewed for accuracy
+**Important**
 
-**Made with ❤️ using CrewAI — Gemini and/or Ollama**
+- Firecrawl key and Node/`npx` are required for web search
+- Choose **one** of Ollama or Gemini via `LLM_PROVIDER`
+- Review generated reports for accuracy; LLMs can misread or skip tool output

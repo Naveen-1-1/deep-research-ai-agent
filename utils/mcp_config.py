@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 _SEARCH_TOOL_FILTER = create_static_tool_filter(allowed_tool_names=["firecrawl_search"])
 
 
-def _find_npx() -> str | None:
+def find_npx() -> str | None:
     """Return path to npx executable, or None if not installed."""
     explicit = os.getenv("NPX_PATH", "").strip()
     if explicit and Path(explicit).is_file():
@@ -50,7 +50,7 @@ def build_firecrawl_mcp_config(api_key: str) -> MCPServerConfig | None:
     Hosted HTTP is opt-in via FIRECRAWL_MCP_TRANSPORT=http (keys may appear in CrewAI UI).
   """
     transport = os.getenv("FIRECRAWL_MCP_TRANSPORT", "auto").strip().lower()
-    npx_path = _find_npx()
+    npx_path = find_npx()
 
     if transport == "http":
         logger.warning(
@@ -83,7 +83,7 @@ def build_firecrawl_mcp_config(api_key: str) -> MCPServerConfig | None:
         )
 
     logger.info(
-        "Firecrawl MCP disabled (npx not found). Using FirecrawlSearchDirect REST tool. "
-        "Install Node.js for MCP, or set FIRECRAWL_MCP_TRANSPORT=http to force hosted MCP."
+        "Firecrawl MCP disabled (npx not found). Install Node.js for MCP, "
+        "or set FIRECRAWL_MCP_TRANSPORT=http to force hosted MCP."
     )
     return None
