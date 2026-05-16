@@ -1,3 +1,3 @@
-"""Canonical CrewAI tool names — use these in @tool(), task prompts, and logs."""
+"""Canonical Firecrawl MCP tool name (used in logs and docs)."""
 
 TOOL_FIRECRAWL_SEARCH = "firecrawl_search"

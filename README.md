@@ -1,52 +1,44 @@
 # 🤖 Deep Research AI Agent
 
-An intelligent multi-agent research system powered by **CrewAI**. It performs web research via **Firecrawl MCP**, analyzes results with **Ollama** (default) or **Google Gemini**, and generates professional PDF reports.
+An intelligent **multi-agent** research system powered by **LangChain**. A ReAct **Research Agent** autonomously searches the web via **Firecrawl MCP**, then **Summarization** and **Presentation** agents produce a professional PDF report — using **Ollama** (default) or **Google Gemini**.
 
 ![Deep Research AI Agent UI](assets/ai-agent-research-ui.png)
 
 ## ✨ Features
 
-- **Multi-Agent Architecture**: Three specialized CrewAI agents:
-  - **Research Agent** — web search via `firecrawl_search`
-  - **Summarization Agent** — structured bullet summaries
-  - **Presentation Agent** — professional report formatting
-- **Single LLM provider** — `LLM_PROVIDER=ollama` (default) or `gemini` for all agents ([`utils/llm_config.py`](utils/llm_config.py))
-- **Firecrawl MCP search** — one tool, `firecrawl_search`, backed by `npx` + `firecrawl-mcp` ([`services/firecrawl_mcp.py`](services/firecrawl_mcp.py))
-- **Configurable research** — adjustable breadth and depth
+- **Three-agent workflow** — Research (autonomous + tools) → Summarizer → Presenter ([`services/langchain_pipeline.py`](services/langchain_pipeline.py))
+- **ReAct research agent** — decides when and how to call `firecrawl_search` (no fixed search script)
+- **Single search tool** — Firecrawl MCP only ([`services/firecrawl_mcp.py`](services/firecrawl_mcp.py))
+- **Single LLM provider** — `LLM_PROVIDER=ollama` (default) or `gemini` ([`utils/llm_config.py`](utils/llm_config.py))
+- **Configurable research** — breadth and depth as guidance in the research agent prompt
 - **PDF reports** — downloadable ReportLab output with source links
-- **Log safety** — API keys redacted in logs and CrewAI console output
+- **Log safety** — API keys redacted in logs; `LOG_LEVEL` for terminal verbosity
 
 ## 🏗️ Architecture
 
 ```
 User Query (Streamlit)
        ↓
-Research Agent  ──tool──►  firecrawl_search
-       │                        ↓
-       │              services/firecrawl_mcp.py
-       │                        ↓
-       │              npx -y firecrawl-mcp (stdio MCP)
+Research Agent (ReAct) ──tool──► firecrawl_search → Firecrawl MCP (stdio)
        ↓
-Summarization Agent  →  Presentation Agent  →  PDF
-       ↑
-  Same LLM (Ollama or Gemini via LiteLLM)
+Summarization Agent (LCEL chain, no tools)
+       ↓
+Presentation Agent (LCEL chain, no tools)
+       ↓
+PDF + Streamlit preview
 ```
 
-**Research Agent**
+| Agent | Tools | Role |
+|-------|--------|------|
+| **Research** | `firecrawl_search` | Autonomous web research; chooses queries and follow-ups |
+| **Summarization** | None | Bullet summary from research notes |
+| **Presentation** | None | Final report (Introduction, Key Findings, Conclusion) |
 
-- Only tool: **`firecrawl_search`** (see [`utils/tool_names.py`](utils/tool_names.py))
-- MCP is **not** attached via CrewAI `mcps=`; the tool calls Firecrawl directly
-- Requires **Node.js / `npx`** and `FIRECRAWL_KEY`
-- `max_retry_limit=2` on task errors
-
-**Summarization & Presentation Agents**
-
-- No tools; same `LLM_PROVIDER` as the researcher
-- Turn research notes into bullets, then a full report with cited URLs
+**Firecrawl MCP** spawns `npx -y firecrawl-mcp` over stdio. Requires **Node.js / `npx`** and `FIRECRAWL_KEY`.
 
 ### LLM provider (one only)
 
-Set **`LLM_PROVIDER`** to **`ollama`** or **`gemini`**. All agents use the same model string from [`utils/llm_config.py`](utils/llm_config.py). There is no mixing (e.g. Ollama for one agent and Gemini for another).
+Set **`LLM_PROVIDER`** to **`ollama`** or **`gemini`**. All agents use the same model from [`utils/llm_config.py`](utils/llm_config.py).
 
 | `LLM_PROVIDER` | Required in `.env` |
 |----------------|-------------------|
@@ -57,7 +49,7 @@ Copy [`.env.example`](.env.example) to `.env` and configure **one** provider blo
 
 ## 📋 Prerequisites
 
-- **Python 3.11–3.13** (3.13+ supported; 3.11–3.13 recommended for package compatibility)
+- **Python 3.11–3.13**
 - **pip** and a virtual environment
 - **Firecrawl API key** — always required
 - **Node.js / `npx`** — required to run `firecrawl-mcp`
@@ -83,7 +75,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 3. **Install dependencies**
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 4. **Configure environment**
@@ -102,6 +94,7 @@ LLM_PROVIDER=ollama
 OLLAMA_MODEL=qwen3:8b
 OLLAMA_BASE_URL=http://localhost:11434
 FIRECRAWL_KEY=your-firecrawl-api-key-here
+LOG_LEVEL=INFO
 ```
 
 Install [Ollama](https://ollama.com/) and pull your model: `ollama pull qwen3:8b`
@@ -113,6 +106,7 @@ LLM_PROVIDER=gemini
 GOOGLE_API_KEY=your-google-api-key-here
 GEMINI_MODEL=gemini-2.5-flash-lite
 FIRECRAWL_KEY=your-firecrawl-api-key-here
+LOG_LEVEL=INFO
 ```
 
 Optional: `NPX_PATH=/full/path/to/npx` if `npx` is not on your `PATH`.
@@ -138,10 +132,10 @@ Opens at `http://localhost:8501`
 1. Enter a **research query**
 2. Set **Search Breadth** (1–10, default **3**) and **Search Depth** (1–5, default **2**)
 3. Click **Run Deep Research**
-4. Watch agent progress in the terminal
+4. Watch agent progress in the terminal (`LOG_LEVEL=INFO`)
 5. Read the report, preview the PDF, and download
 
-**Breadth** = number of search angles. **Depth** = follow-up searches per angle.
+**Breadth** and **depth** guide the Research Agent’s prompt (approximate angles and follow-up levels); the agent chooses concrete searches.
 
 ## 📦 Project structure
 
@@ -149,25 +143,22 @@ Opens at `http://localhost:8501`
 deep-research-ai-agent/
 ├── main.py                      # Streamlit UI
 ├── controllers/
-│   └── research_controller.py   # Crew kickoff, PDF assembly
+│   └── research_controller.py   # Orchestration, PDF assembly
 ├── services/
-│   ├── agents_service.py        # CrewAI agents, tasks, firecrawl_search tool
-│   └── firecrawl_mcp.py         # MCP client (firecrawl_search calls)
+│   ├── langchain_pipeline.py    # ReAct research + summarize + present
+│   └── firecrawl_mcp.py         # MCP client
 ├── models/
 │   └── pdf_generator.py         # ReportLab PDF
 ├── utils/
-│   ├── llm_config.py            # LLM_PROVIDER → LiteLLM model string
-│   ├── tool_names.py            # Canonical tool name constants
-│   ├── mcp_config.py            # find_npx() helper (+ legacy Crew MCP config)
-│   ├── markdown_cleaner.py        # Report cleanup, URL extraction
-│   ├── log_sanitizer.py         # Secret redaction in logs
-│   └── crewai_safe_console.py   # Secret redaction in CrewAI UI
-├── assets/
-│   └── ai-agent-research-ui.png
+│   ├── llm_config.py            # LLM_PROVIDER → LangChain ChatModel
+│   ├── tool_names.py            # firecrawl_search constant
+│   ├── url_extract.py           # URL collection from search JSON
+│   ├── mcp_config.py            # find_npx()
+│   ├── markdown_cleaner.py
+│   └── log_sanitizer.py
+├── assets/                      # UI screenshot (optional)
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
-├── LICENSE
 └── README.md
 ```
 
@@ -175,77 +166,41 @@ deep-research-ai-agent/
 
 | Category | Technology |
 |----------|------------|
-| Multi-agent framework | [CrewAI](https://www.crewai.com/) |
+| Agents | LangChain `create_agent` (ReAct research agent) |
+| Chains | LangChain LCEL (summarize, present) |
 | UI | [Streamlit](https://streamlit.io/) |
-| LLM routing | [LiteLLM](https://docs.litellm.ai/) (`ollama/...` or `gemini/...`) |
-| Local LLM | [Ollama](https://ollama.com/) |
-| Cloud LLM | [Google Gemini](https://ai.google.dev/) |
-| Web search | [Firecrawl](https://www.firecrawl.dev/) via [MCP](https://modelcontextprotocol.io/) |
-| MCP runtime | `firecrawl-mcp` (stdio through `npx`) |
+| Local LLM | [Ollama](https://ollama.com/) via `langchain-ollama` |
+| Cloud LLM | [Google Gemini](https://ai.google.dev/) via `langchain-google-genai` |
+| Web search | [Firecrawl](https://www.firecrawl.dev/) via MCP |
 | PDF | [ReportLab](https://www.reportlab.com/) |
 
 ## 🔍 How it works
 
-1. **Load config** — `.env` → [`llm_config.py`](utils/llm_config.py) picks one provider for all agents.
-2. **Research** — Research Agent calls **`firecrawl_search`**; [`firecrawl_mcp.py`](services/firecrawl_mcp.py) spawns `npx -y firecrawl-mcp` and runs `firecrawl_search` with your query.
-3. **URLs** — Search results are parsed; links are stored for the PDF.
-4. **Summarize** — Summarization Agent condenses the research task output.
-5. **Report** — Presentation Agent writes Introduction / Key Findings / Conclusion.
-6. **Deliver** — Markdown is cleaned; PDF is generated and shown in Streamlit.
+1. **Load config** — `.env` → [`llm_config.py`](utils/llm_config.py).
+2. **Research Agent** — ReAct loop calls `firecrawl_search` until it finishes notes (`recursion_limit` scales with breadth × depth).
+3. **Summarization Agent** — condenses research output into bullets.
+4. **Presentation Agent** — writes the final markdown report.
+5. **Deliver** — PDF + Streamlit preview with collected URLs.
 
 ## 🐛 Troubleshooting
 
-**`Invalid LLM_PROVIDER` or missing API key**
+**No logs in terminal**
 
-- Use only `ollama` or `gemini` in `.env`
-- For `gemini`, set `GOOGLE_API_KEY`
-- For `ollama`, ensure `ollama serve` / Ollama app is running and `OLLAMA_MODEL` matches `ollama list`
+- Set `LOG_LEVEL=INFO` in `.env` and restart Streamlit.
+- Logs appear when you run a research job, not only at startup.
 
-**`Firecrawl MCP requires npx` / MCP not available**
+**Research Agent empty output / tool-calling failures (Ollama)**
 
-- Install [Node.js](https://nodejs.org/) so `npx --version` works
-- Or set `NPX_PATH` in `.env` to the full path to `npx`
+- Use a larger model (`qwen3:8b`) or `LLM_PROVIDER=gemini`.
+- Smaller models may fail to call tools reliably.
 
-**`Firecrawl API key is not configured`**
+**`Firecrawl MCP requires npx`**
 
-- Set `FIRECRAWL_KEY` in `.env`
+- Install [Node.js](https://nodejs.org/) or set `NPX_PATH` in `.env`.
 
-**`Google Gen AI native provider not available`** (Gemini mode)
+**Incomplete report / missing URLs**
 
-```bash
-pip install "crewai[google-genai]"
-```
-
-**Gemini `404` / model not found**
-
-- Set `GEMINI_MODEL` to a [supported model id](https://ai.google.dev/gemini-api/docs/models) (default: `gemini-2.5-flash-lite`)
-
-**Ollama: `Invalid response from LLM call - None or empty`**
-
-- Common with smaller or “thinking” models under CrewAI tool-calling
-- Try a larger model (e.g. `qwen3:8b`) or `LLM_PROVIDER=gemini` for more reliable agent loops
-- `firecrawl_search` may still succeed in logs even if the agent fails to finish notes
-
-**Ollama: research ignores search results**
-
-- Ensure the model follows tool output; try `gemini` or reduce breadth/depth for shorter runs
-
-**Streamlit port in use**
-
-```bash
-streamlit run main.py --server.port 8502
-```
-
-## 📊 Performance notes
-
-| Provider | Speed | Cost |
-|----------|--------|------|
-| **Ollama** | Depends on hardware and model size; local, no API token billing | Free (local compute) |
-| **Gemini** | Generally faster tool-calling for CrewAI | Billed per Google AI pricing; `gemini-2.5-flash-lite` is cost-effective |
-
-- Typical run: **1–5 minutes** depending on breadth, depth, and model
-- Each extra **breadth** adds searches (and MCP startup cost per tool call)
-- Firecrawl usage counts against your Firecrawl plan credits
+- Try Gemini or reduce breadth/depth for shorter runs.
 
 ## 📄 License
 
@@ -253,13 +208,7 @@ MIT License — see [LICENSE](LICENSE). **Copyright (c) 2025 Naveen Shankar**
 
 ## 🙏 Acknowledgments
 
-- [CrewAI](https://www.crewai.com/)
+- [LangChain](https://www.langchain.com/)
 - [Ollama](https://ollama.com/) and [Google Gemini](https://ai.google.dev/)
-- [Firecrawl](https://www.firecrawl.dev/) and the Firecrawl MCP server
+- [Firecrawl](https://www.firecrawl.dev/)
 - [Streamlit](https://streamlit.io/)
-
-**Important**
-
-- Firecrawl key and Node/`npx` are required for web search
-- Choose **one** of Ollama or Gemini via `LLM_PROVIDER`
-- Review generated reports for accuracy; LLMs can misread or skip tool output

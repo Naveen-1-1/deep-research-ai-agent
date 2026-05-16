@@ -5,7 +5,17 @@ import os
 import re
 from re import Pattern
 
+from dotenv import load_dotenv
+
 _REDACTED = "[REDACTED]"
+
+_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
 # Hosted Firecrawl MCP puts the API key in the URL path.
 _FIRECRAWL_MCP_URL: Pattern[str] = re.compile(
@@ -13,7 +23,7 @@ _FIRECRAWL_MCP_URL: Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# CrewAI prefixes MCP tools with host + key segments from the hosted URL.
+# Legacy hosted MCP tool names may embed key segments in the name.
 _FIRECRAWL_MCP_TOOL_PREFIX: Pattern[str] = re.compile(
     r"mcp_firecrawl_dev_[a-z0-9_]{8,}",
     re.IGNORECASE,
@@ -79,22 +89,44 @@ class SecretRedactingFilter(logging.Filter):
         return True
 
 
-def configure_safe_logging(level: int = logging.INFO) -> None:
+def resolve_log_level() -> int:
+    """Read LOG_LEVEL from the environment (default INFO)."""
+    raw = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    return _LOG_LEVELS.get(raw, logging.INFO)
+
+
+def configure_safe_logging(level: int | None = None) -> None:
     """
     Install secret redaction on loggers. Re-registers env secrets on each call
     (safe after load_dotenv). Call at application startup before other imports emit logs.
+
+    Adds a stderr StreamHandler when the root logger has none, so pipeline INFO
+    logs appear in the terminal (e.g. under `streamlit run`).
     """
+    load_dotenv()
     register_secrets_from_env()
     redact_filter = SecretRedactingFilter()
+
+    if level is None:
+        level = resolve_log_level()
 
     root = logging.getLogger()
     root.setLevel(level)
     if not any(isinstance(f, SecretRedactingFilter) for f in root.filters):
         root.addFilter(redact_filter)
 
-    for handler in root.handlers:
-        if not any(isinstance(f, SecretRedactingFilter) for f in handler.filters):
-            handler.addFilter(redact_filter)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
+        )
+        handler.addFilter(redact_filter)
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            if not any(isinstance(f, SecretRedactingFilter) for f in handler.filters):
+                handler.addFilter(redact_filter)
 
     # httpx/httpcore log full request URLs including embedded API keys.
     for logger_name in (
