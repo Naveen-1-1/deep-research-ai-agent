@@ -1,4 +1,4 @@
-from services.agents_service import setup_agents_and_tasks, extracted_links
+from services.langchain_pipeline import extracted_links, run_research_pipeline
 from models.pdf_generator import create_pdf
 from utils.markdown_cleaner import clean_markdown, extract_urls
 import base64
@@ -17,24 +17,14 @@ def _is_incomplete_report(text: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in _INCOMPLETE_REPORT_PATTERNS)
 
 
-def _resolve_report_output(result) -> str:
-    """Prefer a complete task output when the crew's final output is incomplete."""
-    if hasattr(result, "raw") and result.raw and not _is_incomplete_report(result.raw):
-        return result.raw
-
-    if hasattr(result, "tasks_output") and result.tasks_output:
-        for task_output in reversed(result.tasks_output):
-            raw = getattr(task_output, "raw", None) or str(task_output)
-            if raw and not _is_incomplete_report(raw):
-                return raw
-
-    return result.raw if hasattr(result, "raw") else str(result)
-
-
 def run_deep_research(query, breadth, depth):
-    crew = setup_agents_and_tasks(query, breadth, depth)
-    result = crew.kickoff()
-    raw_output = _resolve_report_output(result)
+    raw_output = run_research_pipeline(query, breadth, depth)
+    if _is_incomplete_report(raw_output):
+        raise RuntimeError(
+            "The model produced an incomplete report (missing URLs). "
+            "Try LLM_PROVIDER=gemini or a larger Ollama model."
+        )
+
     cleaned_output = clean_markdown(raw_output)
 
     links = list(extracted_links)

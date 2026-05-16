@@ -1,14 +1,12 @@
 from utils.log_sanitizer import configure_safe_logging
-from utils.crewai_safe_console import patch_crewai_console_redaction
 
 configure_safe_logging()
-patch_crewai_console_redaction()
 
 import streamlit as st
 from controllers.research_controller import run_deep_research
 
 
-st.title("Deep Research Assistant with CrewAI")
+st.title("Deep Research Assistant")
 st.markdown("Enter your research topic and configure parameters below:")
 
 query = st.text_input("Research Query")
@@ -19,7 +17,7 @@ if st.button("Run Deep Research"):
     if not query:
         st.error("Please enter a research query.")
     else:
-        with st.spinner("Running research process with CrewAI agents..."):
+        with st.spinner("Running research agents (Research → Summarize → Present)..."):
             cleaned_output, pdf_data, base64_pdf = run_deep_research(query, breadth, depth)
 
             st.success("Research complete!")

@@ -1,10 +1,9 @@
 streamlit
-crewai[google-genai]
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-ollama>=0.2.0
+langchain-google-genai>=2.0.0
 google-generativeai
-langchain-google-genai
-langchain
 reportlab
 mcp
 python-dotenv
-requests
-litellm
